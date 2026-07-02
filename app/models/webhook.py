@@ -6,14 +6,9 @@ class UserID(BaseModel):
     id: str
 
 # --- Attachment Models (Images, Videos, Audios, Files, Story Mentions) ---
-class AttachmentPayload(BaseModel):
-    url: Optional[str] = None
-    title: Optional[str] = None
-    sticker_id: Optional[int] = None
-
 class Attachment(BaseModel):
     type: str  # 'image', 'video', 'audio', 'file', 'story_mention', 'fallback'
-    payload: Optional[AttachmentPayload] = None
+    payload: Optional[Dict[str, Any]] = None
 
 # --- Message Details ---
 class QuickReply(BaseModel):
@@ -22,21 +17,43 @@ class QuickReply(BaseModel):
 class ReplyTo(BaseModel):
     mid: str
 
+class ReferralEvent(BaseModel):
+    ref: str
+    source: Optional[str] = None
+    type: Optional[str] = None
+    ad_id: Optional[str] = None
+
 class MessageContent(BaseModel):
     mid: str
     text: Optional[str] = None
     attachments: Optional[List[Attachment]] = None
     quick_reply: Optional[QuickReply] = None
     reply_to: Optional[ReplyTo] = None
+    referral: Optional[ReferralEvent] = None
     is_echo: Optional[bool] = False
-    app_id: Optional[int] = None
     metadata: Optional[str] = None
 
 # --- Postback details (buttons, Get Started trigger) ---
 class PostbackContent(BaseModel):
     title: str
     payload: str
-    referral: Optional[Dict[str, Any]] = None
+    referral: Optional[ReferralEvent] = None
+
+class ReadEvent(BaseModel):
+    mid: Optional[str] = None
+    watermark: Optional[int] = None
+
+class ReactionEvent(BaseModel):
+    mid: str
+    action: str  # 'react' or 'unreact'
+    reaction: Optional[str] = None
+    emoji: Optional[str] = None
+
+class OptinEvent(BaseModel):
+    ref: Optional[str] = None
+    user_ref: Optional[str] = None
+    type: Optional[str] = None
+    payload: Optional[str] = None
 
 # --- Main Event Wrapper ---
 class MessagingEvent(BaseModel):
@@ -45,19 +62,12 @@ class MessagingEvent(BaseModel):
     timestamp: int
     message: Optional[MessageContent] = None
     postback: Optional[PostbackContent] = None
-    referral: Optional[Dict[str, Any]] = None
-    read: Optional[Dict[str, Any]] = None
-    delivery: Optional[Dict[str, Any]] = None
+    referral: Optional[ReferralEvent] = None
+    read: Optional[ReadEvent] = None
+    reaction: Optional[ReactionEvent] = None
+    optin: Optional[OptinEvent] = None
 
 # --- Instagram Graph API Changes (Comments, Story Mentions, Media) ---
-class ChangeValue(BaseModel):
-    media_id: Optional[str] = None
-    comment_id: Optional[str] = None
-    text: Optional[str] = None
-    from_user: Optional[Dict[str, Any]] = Field(None, alias="from")
-    id: Optional[str] = None
-    username: Optional[str] = None
-
 class WebhookChange(BaseModel):
     field: str
     value: Dict[str, Any]

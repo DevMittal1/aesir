@@ -8,6 +8,7 @@ from main import app
 from app.config import settings
 from app.utils.rate_limiter import rate_limiter
 from app.database.mongodb import mongodb
+from app.services.webhook_queue import webhook_queue
 
 client = TestClient(app)
 
@@ -26,10 +27,12 @@ def setup_test_context():
     mock_connect = AsyncMock()
     mock_close = AsyncMock()
     mock_save = AsyncMock(return_value="mocked_document_id_5678")
+    mock_enqueue = AsyncMock()
     
     with patch.object(mongodb, "connect", mock_connect), \
          patch.object(mongodb, "close", mock_close), \
-         patch.object(mongodb, "save_webhook_payload", mock_save):
+         patch.object(mongodb, "save_webhook_payload", mock_save), \
+         patch.object(webhook_queue, "enqueue", mock_enqueue):
         yield
         
     # Restore original configurations
@@ -188,3 +191,101 @@ def test_rate_limiting_blocking():
     res3 = client.get("/webhook", params=params)
     assert res3.status_code == 429
     assert res3.json()["detail"] == "Too many requests. Please try again later."
+
+
+@pytest.mark.asyncio
+async def test_webhook_queue_processing_and_idempotency():
+    from app.services.webhook_queue import WebhookQueue
+    from app.services.instagram import instagram_service
+    
+    # Instantiate a clean queue for testing
+    queue = WebhookQueue()
+    
+    # Mock methods on mongodb and instagram_service
+    mock_is_processed = AsyncMock(side_effect=lambda mid: mid == "duplicate_mid")
+    mock_mark_processed = AsyncMock()
+    mock_update_status = AsyncMock()
+    mock_handle_message = AsyncMock()
+    
+    with patch.object(mongodb, "is_event_processed", mock_is_processed), \
+         patch.object(mongodb, "mark_event_processed", mock_mark_processed), \
+         patch.object(mongodb, "update_payload_status", mock_update_status), \
+         patch.object(instagram_service, "handle_message_event", mock_handle_message):
+         
+        payload = {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "entry_id",
+                    "time": 12345,
+                    "messaging": [
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "message": {
+                                "mid": "unique_mid_1",
+                                "text": "hello"
+                            }
+                        },
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "message": {
+                                "mid": "duplicate_mid",
+                                "text": "should be skipped"
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        # Test processing of the payload
+        await queue._process_payload("test_payload_id", payload)
+        
+        # Verify status updates on the payload
+        mock_update_status.assert_any_call("test_payload_id", "processing")
+        mock_update_status.assert_any_call("test_payload_id", "processed")
+        
+        # Verify handle_message_event called only for unique_mid_1, not duplicate_mid
+        mock_handle_message.assert_called_once_with("sender_1", {"mid": "unique_mid_1", "text": "hello", "is_echo": False})
+        
+        # Verify mark_event_processed was called for the processed event
+        mock_mark_processed.assert_called_once_with("unique_mid_1")
+
+
+@pytest.mark.asyncio
+async def test_webhook_queue_recovery_on_startup():
+    from app.services.webhook_queue import WebhookQueue
+    import asyncio
+    
+    queue = WebhookQueue()
+    
+    # Mock database to return some pending items
+    mock_get_pending = AsyncMock(return_value=[
+        {"_id": "pending_id_1", "payload": {"object": "instagram", "entry": []}}
+    ])
+    
+    with patch.object(mongodb, "get_pending_payloads", mock_get_pending):
+        # We start the queue, but we don't start the full worker loop to keep the test simple, 
+        # or we mock it. We can mock asyncio.create_task to return an awaitable asyncio.Future.
+        mock_task = asyncio.Future()
+        with patch("asyncio.create_task", return_value=mock_task) as mock_create_task:
+            await queue.start()
+            
+            # Assert get_pending_payloads was called
+            mock_get_pending.assert_called_once()
+            
+            # Assert queue has the pending item
+            assert queue._queue.qsize() == 1
+            item = await queue._queue.get()
+            assert item == ("pending_id_1", {"object": "instagram", "entry": []})
+            
+            # Close the unawaited worker loop coroutine to suppress python warnings
+            coro = mock_create_task.call_args[0][0]
+            coro.close()
+            
+            # Stop clean up
+            await queue.stop()

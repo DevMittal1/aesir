@@ -16,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 from contextlib import asynccontextmanager
 from app.database.mongodb import mongodb
+from app.services.webhook_queue import webhook_queue
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Connect to MongoDB
+    # Startup: Connect to MongoDB and start worker queue
     await mongodb.connect()
+    await webhook_queue.start()
     yield
-    # Shutdown: Close MongoDB Connection
+    # Shutdown: Stop worker queue and close MongoDB Connection
+    await webhook_queue.stop()
     await mongodb.close()
 
 # Initialize FastAPI application
