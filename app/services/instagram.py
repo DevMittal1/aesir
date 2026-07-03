@@ -11,17 +11,18 @@ class InstagramService:
         self.page_access_token = settings.instagram_page_access_token
         self.base_url = f"https://graph.facebook.com/{self.api_version}"
 
-    async def send_raw_message(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_raw_message(self, payload: Dict[str, Any], access_token: Optional[str] = None) -> Dict[str, Any]:
         """
         Send a raw messaging payload to the Meta Graph API.
         """
         url = f"{self.base_url}/me/messages"
-        params = {"access_token": self.page_access_token}
+        token = access_token or self.page_access_token
+        params = {"access_token": token}
         
         async with httpx.AsyncClient() as client:
             try:
                 logger.info(f"Sending message payload to {url}: {payload}")
-                if self.page_access_token == "mock_page_access_token":
+                if token == "mock_page_access_token":
                     logger.info("Mock Page Access Token detected. Skipping network call.")
                     return {"recipient_id": payload.get("recipient", {}).get("id"), "message_id": "mock_mid_12345"}
                 
@@ -37,7 +38,7 @@ class InstagramService:
                 logger.exception("Error occurred while sending message to Meta")
                 raise exc
 
-    async def send_text_message(self, recipient_id: str, text: str) -> Dict[str, Any]:
+    async def send_text_message(self, recipient_id: str, text: str, access_token: Optional[str] = None) -> Dict[str, Any]:
         """
         Send a standard text message.
         """
@@ -45,9 +46,9 @@ class InstagramService:
             "recipient": {"id": recipient_id},
             "message": {"text": text}
         }
-        return await self.send_raw_message(payload)
+        return await self.send_raw_message(payload, access_token=access_token)
 
-    async def send_image_message(self, recipient_id: str, image_url: str) -> Dict[str, Any]:
+    async def send_image_message(self, recipient_id: str, image_url: str, access_token: Optional[str] = None) -> Dict[str, Any]:
         """
         Send an image attachment.
         """
@@ -63,9 +64,9 @@ class InstagramService:
                 }
             }
         }
-        return await self.send_raw_message(payload)
+        return await self.send_raw_message(payload, access_token=access_token)
 
-    async def send_quick_replies(self, recipient_id: str, text: str, replies: List[Dict[str, str]]) -> Dict[str, Any]:
+    async def send_quick_replies(self, recipient_id: str, text: str, replies: List[Dict[str, str]], access_token: Optional[str] = None) -> Dict[str, Any]:
         """
         Send text with quick reply buttons.
         """
@@ -84,14 +85,15 @@ class InstagramService:
                 "quick_replies": quick_replies
             }
         }
-        return await self.send_raw_message(payload)
+        return await self.send_raw_message(payload, access_token=access_token)
 
-    async def _handle_text_message(self, sender_id: str, text: str) -> None:
+    async def _handle_text_message(self, sender_id: str, text: str, access_token: Optional[str] = None) -> None:
         text_lower = text.lower().strip()
         if text_lower == "image":
             await self.send_image_message(
                 sender_id,
-                "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500"
+                "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500",
+                access_token=access_token
             )
         elif text_lower == "help":
             await self.send_quick_replies(
@@ -100,15 +102,17 @@ class InstagramService:
                 [
                     {"title": "Get Started", "payload": "PAYLOAD_START"},
                     {"title": "View Services", "payload": "PAYLOAD_SERVICES"}
-                ]
+                ],
+                access_token=access_token
             )
         else:
             await self.send_text_message(
                 sender_id,
-                f"Echoing back your message: '{text}'"
+                f"Echoing back your message: '{text}'",
+                access_token=access_token
             )
 
-    async def _handle_attachments(self, sender_id: str, attachments: List[Dict[str, Any]]) -> None:
+    async def _handle_attachments(self, sender_id: str, attachments: List[Dict[str, Any]], access_token: Optional[str] = None) -> None:
         for attachment in attachments:
             att_type = attachment.get("type")
             att_payload = attachment.get("payload", {})
@@ -117,15 +121,17 @@ class InstagramService:
             if att_type == "story_mention":
                 await self.send_text_message(
                     sender_id,
-                    "Thanks for mentioning us in your Story! 📸"
+                    "Thanks for mentioning us in your Story! 📸",
+                    access_token=access_token
                 )
             else:
                 await self.send_text_message(
                     sender_id,
-                    f"Received your attachment of type: {att_type} at {att_url}"
+                    f"Received your attachment of type: {att_type} at {att_url}",
+                    access_token=access_token
                 )
 
-    async def handle_message_event(self, sender_id: str, message: Dict[str, Any]) -> None:
+    async def handle_message_event(self, sender_id: str, message: Dict[str, Any], access_token: Optional[str] = None) -> None:
         """
         Handle a received message event.
         """
@@ -144,14 +150,15 @@ class InstagramService:
             qr_payload = quick_reply.get("payload")
             await self.send_text_message(
                 sender_id, 
-                f"You selected option with payload: {qr_payload}"
+                f"You selected option with payload: {qr_payload}",
+                access_token=access_token
             )
         elif text:
-            await self._handle_text_message(sender_id, text)
+            await self._handle_text_message(sender_id, text, access_token=access_token)
         elif attachments:
-            await self._handle_attachments(sender_id, attachments)
+            await self._handle_attachments(sender_id, attachments, access_token=access_token)
 
-    async def handle_postback_event(self, sender_id: str, postback: Dict[str, Any]) -> None:
+    async def handle_postback_event(self, sender_id: str, postback: Dict[str, Any], access_token: Optional[str] = None) -> None:
         """
         Handle postback events.
         """
@@ -161,7 +168,62 @@ class InstagramService:
         
         await self.send_text_message(
             sender_id,
-            f"Received button click: '{title}' (payload: {payload})"
+            f"Received button click: '{title}' (payload: {payload})",
+            access_token=access_token
+        )
+
+    async def handle_read_event(self, sender_id: str, read: Dict[str, Any], access_token: Optional[str] = None) -> None:
+        """
+        Handle read receipt events.
+        """
+        watermark = read.get("watermark")
+        mid = read.get("mid")
+        logger.info(f"Received read receipt from user {sender_id}: watermark={watermark}, mid={mid}")
+
+    async def handle_reaction_event(self, sender_id: str, reaction: Dict[str, Any], access_token: Optional[str] = None) -> None:
+        """
+        Handle message reaction events.
+        """
+        mid = reaction.get("mid")
+        action = reaction.get("action")
+        emoji = reaction.get("emoji")
+        logger.info(f"Received reaction from user {sender_id}: mid={mid}, action={action}, emoji={emoji}")
+        
+        # Acknowledge the reaction if it's "react"
+        if action == "react":
+            await self.send_text_message(
+                sender_id,
+                f"Glad you liked that message! ❤️",
+                access_token=access_token
+            )
+
+    async def handle_referral_event(self, sender_id: str, referral: Dict[str, Any], access_token: Optional[str] = None) -> None:
+        """
+        Handle referral events.
+        """
+        ref = referral.get("ref")
+        source = referral.get("source")
+        ref_type = referral.get("type")
+        logger.info(f"Received referral event from user {sender_id}: ref={ref}, source={source}, type={ref_type}")
+        
+        await self.send_text_message(
+            sender_id,
+            f"Welcome! Thanks for joining us via the link (referral code: {ref}). How can we help you today?",
+            access_token=access_token
+        )
+
+    async def handle_optin_event(self, sender_id: str, optin: Dict[str, Any], access_token: Optional[str] = None) -> None:
+        """
+        Handle opt-in events.
+        """
+        ref = optin.get("ref")
+        user_ref = optin.get("user_ref")
+        logger.info(f"Received opt-in event from user {sender_id}: ref={ref}, user_ref={user_ref}")
+        
+        await self.send_text_message(
+            sender_id,
+            f"Thank you for opting in! (Ref: {ref})",
+            access_token=access_token
         )
 
 instagram_service = InstagramService()

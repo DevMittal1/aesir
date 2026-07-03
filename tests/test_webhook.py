@@ -205,11 +205,13 @@ async def test_webhook_queue_processing_and_idempotency():
     mock_is_processed = AsyncMock(side_effect=lambda mid: mid == "duplicate_mid")
     mock_mark_processed = AsyncMock()
     mock_update_status = AsyncMock()
+    mock_get_token = AsyncMock(return_value="mock_saas_page_access_token")
     mock_handle_message = AsyncMock()
     
     with patch.object(mongodb, "is_event_processed", mock_is_processed), \
          patch.object(mongodb, "mark_event_processed", mock_mark_processed), \
          patch.object(mongodb, "update_payload_status", mock_update_status), \
+         patch.object(mongodb, "get_page_access_token", mock_get_token), \
          patch.object(instagram_service, "handle_message_event", mock_handle_message):
          
         payload = {
@@ -250,7 +252,11 @@ async def test_webhook_queue_processing_and_idempotency():
         mock_update_status.assert_any_call("test_payload_id", "processed")
         
         # Verify handle_message_event called only for unique_mid_1, not duplicate_mid
-        mock_handle_message.assert_called_once_with("sender_1", {"mid": "unique_mid_1", "text": "hello", "is_echo": False})
+        mock_handle_message.assert_called_once_with(
+            "sender_1",
+            {"mid": "unique_mid_1", "text": "hello", "is_echo": False},
+            access_token="mock_saas_page_access_token"
+        )
         
         # Verify mark_event_processed was called for the processed event
         mock_mark_processed.assert_called_once_with("unique_mid_1")
@@ -289,3 +295,88 @@ async def test_webhook_queue_recovery_on_startup():
             
             # Stop clean up
             await queue.stop()
+
+
+@pytest.mark.asyncio
+async def test_webhook_queue_processing_all_new_events():
+    from app.services.webhook_queue import WebhookQueue
+    from app.services.instagram import instagram_service
+    
+    queue = WebhookQueue()
+    
+    mock_is_processed = AsyncMock(return_value=False)
+    mock_mark_processed = AsyncMock()
+    mock_update_status = AsyncMock()
+    mock_get_token = AsyncMock(return_value="mock_saas_page_access_token")
+    mock_handle_read = AsyncMock()
+    mock_handle_reaction = AsyncMock()
+    mock_handle_referral = AsyncMock()
+    mock_handle_optin = AsyncMock()
+    
+    with patch.object(mongodb, "is_event_processed", mock_is_processed), \
+         patch.object(mongodb, "mark_event_processed", mock_mark_processed), \
+         patch.object(mongodb, "update_payload_status", mock_update_status), \
+         patch.object(mongodb, "get_page_access_token", mock_get_token), \
+         patch.object(instagram_service, "handle_read_event", mock_handle_read), \
+         patch.object(instagram_service, "handle_reaction_event", mock_handle_reaction), \
+         patch.object(instagram_service, "handle_referral_event", mock_handle_referral), \
+         patch.object(instagram_service, "handle_optin_event", mock_handle_optin):
+         
+        payload = {
+            "object": "instagram",
+            "entry": [
+                {
+                    "id": "entry_id",
+                    "time": 12345,
+                    "messaging": [
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "read": {"watermark": 1600000000, "mid": "mid.read_msg"}
+                        },
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "reaction": {"mid": "mid.reacted_msg", "action": "react", "emoji": "❤️", "reaction": "love"}
+                        },
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "referral": {"ref": "ref_code_123", "source": "SHORTLINK", "type": "OPEN_THREAD"}
+                        },
+                        {
+                            "sender": {"id": "sender_1"},
+                            "recipient": {"id": "receiver_1"},
+                            "timestamp": 12345,
+                            "optin": {"ref": "optin_ref_456"}
+                        }
+                    ]
+                }
+            ]
+        }
+        
+        await queue._process_payload("test_payload_id", payload)
+        
+        mock_handle_read.assert_called_once_with(
+            "sender_1",
+            {"watermark": 1600000000, "mid": "mid.read_msg"},
+            access_token="mock_saas_page_access_token"
+        )
+        mock_handle_reaction.assert_called_once_with(
+            "sender_1",
+            {"mid": "mid.reacted_msg", "action": "react", "emoji": "❤️", "reaction": "love"},
+            access_token="mock_saas_page_access_token"
+        )
+        mock_handle_referral.assert_called_once_with(
+            "sender_1",
+            {"ref": "ref_code_123", "source": "SHORTLINK", "type": "OPEN_THREAD"},
+            access_token="mock_saas_page_access_token"
+        )
+        mock_handle_optin.assert_called_once_with(
+            "sender_1",
+            {"ref": "optin_ref_456"},
+            access_token="mock_saas_page_access_token"
+        )

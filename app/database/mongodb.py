@@ -132,5 +132,39 @@ class MongoDB:
         except Exception:
             logger.exception(f"Failed to mark event {event_id} as processed.")
 
+    async def get_page_access_token(self, business_id: str) -> Optional[str]:
+        """
+        Retrieve the Page Access Token for a given Instagram Business Account ID.
+        """
+        if self.db is None:
+            return None
+        try:
+            doc = await self.db.page_access_tokens.find_one({"instagram_business_id": business_id})
+            if doc:
+                return doc.get("page_access_token")
+            return None
+        except Exception:
+            logger.exception(f"Failed to retrieve page access token for business_id {business_id}")
+            return None
+
+    async def save_page_access_token(self, business_id: str, page_access_token: str) -> None:
+        """
+        Save or update a Page Access Token for an Instagram Business Account ID.
+        """
+        if self.db is None:
+            return
+        try:
+            await self.db.page_access_tokens.update_one(
+                {"instagram_business_id": business_id},
+                {"$set": {
+                    "page_access_token": page_access_token,
+                    "updated_at": datetime.now(timezone.utc)
+                }},
+                upsert=True
+            )
+            logger.info(f"Successfully saved/updated page access token for business_id {business_id}")
+        except Exception:
+            logger.exception(f"Failed to save page access token for business_id {business_id}")
+
 # Database singleton
 mongodb = MongoDB()
