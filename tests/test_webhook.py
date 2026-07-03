@@ -17,6 +17,10 @@ def setup_test_context():
     # Save original configurations
     orig_verify_token = settings.instagram_verify_token
     orig_app_secret = settings.instagram_app_secret
+    orig_app_id = settings.instagram_app_id
+    orig_frontend_dashboard_url = settings.frontend_dashboard_url
+    orig_backend_public_url = settings.backend_public_url
+    orig_oauth_redirect_uri = settings.oauth_redirect_uri
     orig_rate_limit_calls = settings.rate_limit_calls
     orig_rate_limit_period = settings.rate_limit_period_seconds
     
@@ -38,6 +42,10 @@ def setup_test_context():
     # Restore original configurations
     settings.instagram_verify_token = orig_verify_token
     settings.instagram_app_secret = orig_app_secret
+    settings.instagram_app_id = orig_app_id
+    settings.frontend_dashboard_url = orig_frontend_dashboard_url
+    settings.backend_public_url = orig_backend_public_url
+    settings.oauth_redirect_uri = orig_oauth_redirect_uri
     settings.rate_limit_calls = orig_rate_limit_calls
     settings.rate_limit_period_seconds = orig_rate_limit_period
     rate_limiter.requests.clear()
@@ -53,6 +61,191 @@ def test_root_endpoint():
     data = response.json()
     assert data["status"] == "healthy"
     assert data["service"] == "instagram-webhook-backend"
+
+
+def test_oauth_url_generator():
+    # 1. Test when app_id is mock_app_id (should fail with 400)
+    settings.instagram_app_id = "mock_app_id"
+    response = client.get("/api/admin/oauth-url", params={"redirect_uri": "http://localhost:3000/dashboard"})
+    assert response.status_code == 400
+    assert "Meta App ID is not configured" in response.json()["detail"]
+
+    # 2. Test when app_id is valid (Instagram default)
+    settings.instagram_app_id = "1234567890"
+    response = client.get(
+        "/api/admin/oauth-url",
+        params={
+            "redirect_uri": "http://localhost:3000/dashboard",
+            "state": "random_csrf_token",
+            "platform": "instagram"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "url" in data
+    assert data["url"].startswith("https://api.instagram.com/oauth/authorize")
+    assert "client_id=1234567890" in data["url"]
+    assert "redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fdashboard" in data["url"]
+    assert "state=random_csrf_token" in data["url"]
+
+    # 3. Test when platform is facebook
+    response = client.get(
+        "/api/admin/oauth-url",
+        params={
+            "redirect_uri": "http://localhost:3000/dashboard",
+            "state": "random_csrf_token",
+            "platform": "facebook"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "url" in data
+    assert data["url"].startswith(f"https://www.facebook.com/{settings.instagram_api_version}/dialog/oauth")
+    assert "client_id=1234567890" in data["url"]
+    assert "redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fdashboard" in data["url"]
+    assert "state=random_csrf_token" in data["url"]
+
+    # 4. Test default backend callback redirect_uri for production flow
+    settings.backend_public_url = "https://backend.example.com"
+    response = client.get(
+        "/api/admin/oauth-url",
+        params={
+            "state": "random_csrf_token",
+            "platform": "facebook"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "redirect_uri=https%3A%2F%2Fbackend.example.com%2Fapi%2Fadmin%2Foauth%2Fcallback" in data["url"]
+
+
+def test_oauth_callback_success_redirects_to_frontend():
+    settings.instagram_app_id = "1234567890"
+    settings.instagram_app_secret = "secret_key_123"
+    settings.frontend_dashboard_url = "https://frontend.example.com/dashboard"
+    settings.backend_public_url = "https://backend.example.com"
+
+    with patch("app.api.admin._connect_meta_accounts", AsyncMock(return_value=[
+        {
+            "page_id": "page_123",
+            "page_name": "Test Page",
+            "instagram_business_id": "ig_123"
+        }
+    ])) as mock_connect:
+        response = client.get("/api/admin/oauth/callback", params={"code": "oauth_code_123"}, follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://frontend.example.com/dashboard?connected=1&accounts=1"
+    mock_connect.assert_awaited_once_with(
+        "oauth_code_123",
+        "https://backend.example.com/api/admin/oauth/callback"
+    )
+
+
+def test_oauth_callback_error_redirects_to_frontend():
+    settings.frontend_dashboard_url = "https://frontend.example.com/dashboard"
+
+    response = client.get(
+        "/api/admin/oauth/callback",
+        params={"error": "access_denied", "error_description": "User cancelled"},
+        follow_redirects=False
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://frontend.example.com/dashboard?connected=0&error=User+cancelled"
+
+
+@pytest.mark.asyncio
+async def test_connect_meta_accounts_saves_connected_account_metadata():
+    from app.api.admin import _connect_meta_accounts
+
+    settings.instagram_app_id = "1234567890"
+    settings.instagram_app_secret = "secret_key_123"
+    settings.instagram_api_version = "v20.0"
+    settings.graph_api_base_url = "https://graph.facebook.com"
+
+    token_response = MagicMock()
+    token_response.json.return_value = {
+        "access_token": "user_token_123",
+        "expires_in": 5184000
+    }
+    token_response.raise_for_status = MagicMock()
+
+    user_profile_response = MagicMock()
+    user_profile_response.json.return_value = {
+        "id": "meta_user_123",
+        "name": "Meta User",
+        "email": "meta@example.com"
+    }
+    user_profile_response.raise_for_status = MagicMock()
+
+    pages_response = MagicMock()
+    pages_response.json.return_value = {
+        "data": [
+            {
+                "id": "page_123",
+                "name": "Test Page",
+                "access_token": "page_token_123",
+                "instagram_business_account": {
+                    "id": "ig_123",
+                    "username": "test_ig"
+                }
+            }
+        ]
+    }
+    pages_response.raise_for_status = MagicMock()
+
+    subscription_response = MagicMock()
+    subscription_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=[token_response, user_profile_response, pages_response])
+    mock_client.post = AsyncMock(return_value=subscription_response)
+
+    mock_client_context = MagicMock()
+    mock_client_context.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.api.admin.httpx.AsyncClient", return_value=mock_client_context), \
+         patch.object(mongodb, "save_meta_user_profile", AsyncMock()) as mock_save_profile, \
+         patch.object(mongodb, "save_page_access_token", AsyncMock()) as mock_save_token:
+        connected_accounts = await _connect_meta_accounts(
+            "oauth_code_123",
+            "https://backend.example.com/api/admin/oauth/callback"
+        )
+
+    assert connected_accounts == [
+        {
+            "page_id": "page_123",
+            "page_name": "Test Page",
+            "meta_user_id": "meta_user_123",
+            "instagram_business_id": "ig_123",
+            "instagram_username": "test_ig",
+            "subscription_status": "subscribed"
+        }
+    ]
+    mock_save_profile.assert_awaited_once_with(
+        meta_user_id="meta_user_123",
+        name="Meta User",
+        email="meta@example.com",
+        user_access_token="user_token_123",
+        token_expires_in=5184000
+    )
+    mock_save_token.assert_awaited_once_with(
+        business_id="ig_123",
+        page_access_token="page_token_123",
+        page_id="page_123",
+        page_name="Test Page",
+        meta_user_id="meta_user_123",
+        instagram_username="test_ig",
+        subscribed_fields=[
+            "messages",
+            "messaging_postbacks",
+            "messaging_seen",
+            "messaging_reactions"
+        ],
+        subscription_status="subscribed"
+    )
 
 
 def test_webhook_verification_success():
@@ -512,5 +705,3 @@ async def test_webhook_queue_activity_logging():
             1600000000,
             {"mid": "mid_activity_1", "text": "hello chatbot", "is_echo": False}
         )
-
-

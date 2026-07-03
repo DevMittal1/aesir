@@ -1,3 +1,4 @@
 dev_docs
 .env
 .venv
+__pycache__

@@ -10,6 +10,12 @@ class Settings(BaseSettings):
     instagram_app_secret: str = "mock_app_secret"
     instagram_app_id: str = "mock_app_id"
     instagram_api_version: str = "v20.0"
+    frontend_dashboard_url: str = "https://insta-ai-frontend.vercel.app/dashboard"
+    backend_public_url: Optional[str] = None
+    oauth_redirect_uri: Optional[str] = None
+    instagram_oauth_base_url: str = "https://api.instagram.com/oauth/authorize"
+    facebook_oauth_base_url: str = "https://www.facebook.com"
+    graph_api_base_url: str = "https://graph.facebook.com"
     
     # Server configuration
     host: str = "0.0.0.0"

@@ -147,24 +147,95 @@ class MongoDB:
             logger.exception(f"Failed to retrieve page access token for business_id {business_id}")
             return None
 
-    async def save_page_access_token(self, business_id: str, page_access_token: str) -> None:
+    async def save_page_access_token(
+        self,
+        business_id: str,
+        page_access_token: str,
+        page_id: Optional[str] = None,
+        page_name: Optional[str] = None,
+        meta_user_id: Optional[str] = None,
+        instagram_username: Optional[str] = None,
+        subscribed_fields: Optional[list[str]] = None,
+        subscription_status: Optional[str] = None
+    ) -> None:
         """
-        Save or update a Page Access Token for an Instagram Business Account ID.
+        Save or update connected Page and Instagram account details.
         """
         if self.db is None:
             return
         try:
+            now = datetime.now(timezone.utc)
+            update_fields = {
+                "page_access_token": page_access_token,
+                "updated_at": now
+            }
+            optional_fields = {
+                "page_id": page_id,
+                "page_name": page_name,
+                "meta_user_id": meta_user_id,
+                "instagram_username": instagram_username,
+                "subscribed_fields": subscribed_fields,
+                "subscription_status": subscription_status
+            }
+            update_fields.update({
+                field: value
+                for field, value in optional_fields.items()
+                if value is not None
+            })
+
             await self.db.page_access_tokens.update_one(
                 {"instagram_business_id": business_id},
-                {"$set": {
-                    "page_access_token": page_access_token,
-                    "updated_at": datetime.now(timezone.utc)
-                }},
+                {
+                    "$set": update_fields,
+                    "$setOnInsert": {"created_at": now}
+                },
                 upsert=True
             )
             logger.info(f"Successfully saved/updated page access token for business_id {business_id}")
         except Exception:
             logger.exception(f"Failed to save page access token for business_id {business_id}")
+
+    async def save_meta_user_profile(
+        self,
+        meta_user_id: str,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+        user_access_token: Optional[str] = None,
+        token_expires_in: Optional[int] = None
+    ) -> None:
+        """
+        Save or update the Meta user who completed the OAuth flow.
+        """
+        if self.db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            update_fields = {
+                "updated_at": now
+            }
+            optional_fields = {
+                "name": name,
+                "email": email,
+                "user_access_token": user_access_token,
+                "token_expires_in": token_expires_in
+            }
+            update_fields.update({
+                field: value
+                for field, value in optional_fields.items()
+                if value is not None
+            })
+
+            await self.db.meta_users.update_one(
+                {"meta_user_id": meta_user_id},
+                {
+                    "$set": update_fields,
+                    "$setOnInsert": {"created_at": now}
+                },
+                upsert=True
+            )
+            logger.info(f"Successfully saved/updated Meta user profile {meta_user_id}")
+        except Exception:
+            logger.exception(f"Failed to save Meta user profile {meta_user_id}")
 
     async def get_instagram_user(self, user_id: str) -> Optional[dict]:
         """
@@ -372,6 +443,33 @@ class MongoDB:
         except Exception:
             logger.exception("Failed to get dashboard stats.")
             return {"total_payloads": 0, "failed_payloads": 0, "total_users": 0, "total_messages": 0}
+
+    async def delete_user_data(self, user_id: str) -> dict:
+        """
+        Delete all stored data for a given Instagram/Facebook user_id.
+        Covers: instagram_users, chat_history, user_activities, processed_events.
+        Returns a dict with deleted_counts per collection.
+        """
+        if self.db is None:
+            logger.warning("MongoDB not connected. Cannot delete user data.")
+            return {}
+        counts = {}
+        try:
+            r = await self.db.instagram_users.delete_many({"instagram_user_id": user_id})
+            counts["instagram_users"] = r.deleted_count
+
+            r = await self.db.chat_history.delete_many({
+                "$or": [{"sender_id": user_id}, {"recipient_id": user_id}]
+            })
+            counts["chat_history"] = r.deleted_count
+
+            r = await self.db.user_activities.delete_many({"instagram_user_id": user_id})
+            counts["user_activities"] = r.deleted_count
+
+            logger.info(f"Deleted all data for user {user_id}: {counts}")
+        except Exception:
+            logger.exception(f"Failed to delete data for user {user_id}")
+        return counts
 
 # Database singleton
 mongodb = MongoDB()
