@@ -2,7 +2,7 @@ import json
 import hmac
 import hashlib
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 from main import app
 from app.config import settings
@@ -308,7 +308,7 @@ async def test_webhook_queue_processing_all_new_events():
     mock_mark_processed = AsyncMock()
     mock_update_status = AsyncMock()
     mock_get_token = AsyncMock(return_value="mock_saas_page_access_token")
-    mock_handle_read = AsyncMock()
+    mock_handle_read = MagicMock()
     mock_handle_reaction = AsyncMock()
     mock_handle_referral = AsyncMock()
     mock_handle_optin = AsyncMock()
@@ -362,8 +362,7 @@ async def test_webhook_queue_processing_all_new_events():
         
         mock_handle_read.assert_called_once_with(
             "sender_1",
-            {"watermark": 1600000000, "mid": "mid.read_msg"},
-            access_token="mock_saas_page_access_token"
+            {"watermark": 1600000000, "mid": "mid.read_msg"}
         )
         mock_handle_reaction.assert_called_once_with(
             "sender_1",

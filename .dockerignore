@@ -1,0 +1,33 @@
+# Ignore git files
+.git
+.gitignore
+
+# Ignore docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Ignore environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Ignore virtual environments
+.venv
+venv
+ENV
+
+# Ignore python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore test and documentation cache/files
+.pytest_cache/
+.cache/
+tests/
+dev_docs/
+
+# Ignore OS-specific files
+.DS_Store

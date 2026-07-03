@@ -174,7 +174,7 @@ class InstagramService:
             access_token=access_token
         )
 
-    async def handle_read_event(self, sender_id: str, read: Dict[str, Any], access_token: Optional[str] = None) -> None:
+    def handle_read_event(self, sender_id: str, read: Dict[str, Any]) -> None:
         """
         Handle read receipt events.
         """
@@ -195,7 +195,7 @@ class InstagramService:
         if action == "react":
             await self.send_text_message(
                 sender_id,
-                f"Glad you liked that message! ❤️",
+                "Glad you liked that message! ❤️",
                 access_token=access_token
             )
 

@@ -214,8 +214,8 @@ class WebhookQueue:
             event.read.model_dump(exclude_none=True)
         )
             
-        await instagram_service.handle_read_event(
-            sender_id, event.read.model_dump(exclude_none=True), access_token=access_token
+        instagram_service.handle_read_event(
+            sender_id, event.read.model_dump(exclude_none=True)
         )
         await mongodb.mark_event_processed(read_id)
 
