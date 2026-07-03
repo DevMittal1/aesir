@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 from pymongo import AsyncMongoClient
 from app.config import settings
@@ -156,7 +156,8 @@ class MongoDB:
         meta_user_id: Optional[str] = None,
         instagram_username: Optional[str] = None,
         subscribed_fields: Optional[list[str]] = None,
-        subscription_status: Optional[str] = None
+        subscription_status: Optional[str] = None,
+        account_status: Optional[str] = None
     ) -> None:
         """
         Save or update connected Page and Instagram account details.
@@ -175,7 +176,8 @@ class MongoDB:
                 "meta_user_id": meta_user_id,
                 "instagram_username": instagram_username,
                 "subscribed_fields": subscribed_fields,
-                "subscription_status": subscription_status
+                "subscription_status": subscription_status,
+                "account_status": account_status
             }
             update_fields.update({
                 field: value
@@ -201,7 +203,8 @@ class MongoDB:
         name: Optional[str] = None,
         email: Optional[str] = None,
         user_access_token: Optional[str] = None,
-        token_expires_in: Optional[int] = None
+        token_expires_in: Optional[int] = None,
+        auth_status: Optional[str] = None
     ) -> None:
         """
         Save or update the Meta user who completed the OAuth flow.
@@ -217,7 +220,9 @@ class MongoDB:
                 "name": name,
                 "email": email,
                 "user_access_token": user_access_token,
-                "token_expires_in": token_expires_in
+                "token_expires_in": token_expires_in,
+                "token_expires_at": now + timedelta(seconds=token_expires_in) if token_expires_in else None,
+                "auth_status": auth_status
             }
             update_fields.update({
                 field: value
@@ -236,6 +241,110 @@ class MongoDB:
             logger.info(f"Successfully saved/updated Meta user profile {meta_user_id}")
         except Exception:
             logger.exception(f"Failed to save Meta user profile {meta_user_id}")
+
+    async def get_meta_users(self) -> list:
+        """
+        Retrieve all Meta users who completed OAuth.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.meta_users.find().sort("updated_at", -1)
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception("Failed to retrieve Meta users.")
+            return []
+
+    async def get_meta_user_profile(self, meta_user_id: str) -> Optional[dict]:
+        """
+        Retrieve a Meta OAuth user profile.
+        """
+        if self.db is None:
+            return None
+        try:
+            doc = await self.db.meta_users.find_one({"meta_user_id": meta_user_id})
+            if doc and "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            return doc
+        except Exception:
+            logger.exception(f"Failed to retrieve Meta user {meta_user_id}")
+            return None
+
+    async def update_meta_user_status(self, meta_user_id: str, auth_status: str) -> bool:
+        """
+        Update OAuth status for a Meta user.
+        """
+        if self.db is None:
+            return False
+        try:
+            result = await self.db.meta_users.update_one(
+                {"meta_user_id": meta_user_id},
+                {"$set": {"auth_status": auth_status, "updated_at": datetime.now(timezone.utc)}}
+            )
+            return result.modified_count > 0
+        except Exception:
+            logger.exception(f"Failed to update Meta user status for {meta_user_id}")
+            return False
+
+    async def get_accounts_by_meta_user(self, meta_user_id: str) -> list:
+        """
+        Retrieve connected Page/Instagram accounts for a Meta OAuth user.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.page_access_tokens.find({"meta_user_id": meta_user_id})
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception(f"Failed to retrieve accounts for Meta user {meta_user_id}")
+            return []
+
+    async def update_connected_account(self, business_id: str, fields: dict) -> bool:
+        """
+        Update management metadata for a connected Page/Instagram account.
+        """
+        if self.db is None:
+            return False
+        try:
+            update_fields = {
+                key: value
+                for key, value in fields.items()
+                if value is not None
+            }
+            if not update_fields:
+                return False
+            update_fields["updated_at"] = datetime.now(timezone.utc)
+            result = await self.db.page_access_tokens.update_one(
+                {"instagram_business_id": business_id},
+                {"$set": update_fields}
+            )
+            return result.modified_count > 0
+        except Exception:
+            logger.exception(f"Failed to update connected account {business_id}")
+            return False
+
+    async def get_connected_account(self, business_id: str) -> Optional[dict]:
+        """
+        Retrieve a connected Page/Instagram account document.
+        """
+        if self.db is None:
+            return None
+        try:
+            doc = await self.db.page_access_tokens.find_one({"instagram_business_id": business_id})
+            if doc and "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            return doc
+        except Exception:
+            logger.exception(f"Failed to retrieve connected account {business_id}")
+            return None
 
     async def get_instagram_user(self, user_id: str) -> Optional[dict]:
         """

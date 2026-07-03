@@ -22,6 +22,12 @@ class AccountCreate(BaseModel):
     page_access_token: str
 
 
+class AccountUpdate(BaseModel):
+    account_status: Optional[str] = None
+    subscription_status: Optional[str] = None
+    notes: Optional[str] = None
+
+
 OAUTH_SCOPES = {
     "instagram": [
         "instagram_business_basic",
@@ -50,6 +56,30 @@ def _oauth_authorize_url(platform: str) -> str:
     if platform == "instagram":
         return settings.instagram_oauth_base_url
     return f"{settings.facebook_oauth_base_url.rstrip('/')}/{settings.instagram_api_version}/dialog/oauth"
+
+
+def _mask_token(token: Optional[str]) -> Optional[str]:
+    if not token:
+        return token
+    if len(token) <= 12:
+        return "***"
+    return f"{token[:6]}...{token[-4:]}"
+
+
+def _sanitize_account(account: dict) -> dict:
+    sanitized = dict(account)
+    if "page_access_token" in sanitized:
+        sanitized["page_access_token_preview"] = _mask_token(sanitized.get("page_access_token"))
+        sanitized.pop("page_access_token", None)
+    return sanitized
+
+
+def _sanitize_meta_user(user: dict) -> dict:
+    sanitized = dict(user)
+    if "user_access_token" in sanitized:
+        sanitized["user_access_token_preview"] = _mask_token(sanitized.get("user_access_token"))
+        sanitized.pop("user_access_token", None)
+    return sanitized
 
 
 @router.get("/oauth-url")
@@ -82,6 +112,14 @@ async def get_oauth_url(
 
     url = f"{_oauth_authorize_url(platform_key)}?{urllib.parse.urlencode(params)}"
     return {"url": url}
+
+
+@router.get("/auth/login")
+async def login_user(request: Request, platform: str = "facebook", state: Optional[str] = None):
+    """
+    Generate the Meta OAuth login URL for connecting a user and their Pages.
+    """
+    return await get_oauth_url(request=request, platform=platform, state=state)
 
 
 @router.get("/oauth/callback", name="oauth_callback")
@@ -178,7 +216,8 @@ async def _connect_meta_accounts(code: str, redirect_uri: str) -> list[dict]:
                 name=user_profile.get("name"),
                 email=user_profile.get("email"),
                 user_access_token=user_access_token,
-                token_expires_in=token_data.get("expires_in")
+                token_expires_in=token_data.get("expires_in"),
+                auth_status="active"
             )
 
         pages_response = await client.get(
@@ -226,7 +265,8 @@ async def _connect_meta_accounts(code: str, redirect_uri: str) -> list[dict]:
                 meta_user_id=meta_user_id,
                 instagram_username=instagram_username,
                 subscribed_fields=subscribed_fields,
-                subscription_status="subscribed"
+                subscription_status="subscribed",
+                account_status="active"
             )
 
             connected_accounts.append({
@@ -235,7 +275,8 @@ async def _connect_meta_accounts(code: str, redirect_uri: str) -> list[dict]:
                 "meta_user_id": meta_user_id,
                 "instagram_business_id": instagram_business_id,
                 "instagram_username": instagram_username,
-                "subscription_status": "subscribed"
+                "subscription_status": "subscribed",
+                "account_status": "active"
             })
 
         if not connected_accounts:
@@ -255,6 +296,127 @@ async def get_accounts():
     accounts = await mongodb.get_all_page_access_tokens()
     return accounts
 
+
+@router.get("/connected-accounts")
+async def get_connected_accounts(include_tokens: bool = False):
+    accounts = await mongodb.get_all_page_access_tokens()
+    if include_tokens:
+        return accounts
+    return [_sanitize_account(account) for account in accounts]
+
+
+@router.get("/connected-accounts/{business_id}")
+async def get_connected_account(business_id: str, include_tokens: bool = False):
+    account = await mongodb.get_connected_account(business_id)
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Connected account not found"
+        )
+    return account if include_tokens else _sanitize_account(account)
+
+
+@router.patch("/connected-accounts/{business_id}")
+async def update_connected_account(business_id: str, account: AccountUpdate):
+    update_fields = account.model_dump(exclude_none=True)
+    if not update_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No account fields provided for update"
+        )
+
+    updated = await mongodb.update_connected_account(business_id, update_fields)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Connected account not found or unchanged"
+        )
+    return {"status": "success", "message": "Connected account updated successfully"}
+
+
+@router.post("/connected-accounts/{business_id}/deauthorize")
+async def deauthorize_connected_account(business_id: str):
+    account = await mongodb.get_connected_account(business_id)
+    if not account:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Connected account not found"
+        )
+
+    page_id = account.get("page_id")
+    page_access_token = account.get("page_access_token")
+    if not page_id or not page_access_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Connected account is missing page_id or page_access_token"
+        )
+
+    graph_base_url = f"{settings.graph_api_base_url.rstrip('/')}/{settings.instagram_api_version}"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.delete(
+            f"{graph_base_url}/{page_id}/subscribed_apps",
+            params={"access_token": page_access_token}
+        )
+        response.raise_for_status()
+
+    await mongodb.update_connected_account(
+        business_id,
+        {
+            "subscription_status": "deauthorized",
+            "account_status": "inactive"
+        }
+    )
+
+    meta_user_id = account.get("meta_user_id")
+    if meta_user_id:
+        remaining_accounts = await mongodb.get_accounts_by_meta_user(meta_user_id)
+        active_remaining = [
+            item for item in remaining_accounts
+            if item.get("instagram_business_id") != business_id
+            and item.get("account_status") == "active"
+        ]
+        if not active_remaining:
+            await mongodb.update_meta_user_status(meta_user_id, "deauthorized")
+
+    return {"status": "success", "message": "Connected account deauthorized successfully"}
+
+
+@router.delete("/connected-accounts/{business_id}")
+async def delete_connected_account(business_id: str, deauthorize: bool = False):
+    if deauthorize:
+        await deauthorize_connected_account(business_id)
+
+    deleted = await mongodb.delete_page_access_token(business_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Connected account not found or could not be deleted"
+        )
+    return {"status": "success", "message": "Connected account deleted successfully"}
+
+
+@router.get("/meta-users")
+async def get_meta_users(include_tokens: bool = False):
+    users = await mongodb.get_meta_users()
+    if include_tokens:
+        return users
+    return [_sanitize_meta_user(user) for user in users]
+
+
+@router.get("/meta-users/{meta_user_id}")
+async def get_meta_user(meta_user_id: str, include_tokens: bool = False):
+    user = await mongodb.get_meta_user_profile(meta_user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Meta user not found"
+        )
+    accounts = await mongodb.get_accounts_by_meta_user(meta_user_id)
+    return {
+        "user": user if include_tokens else _sanitize_meta_user(user),
+        "connected_accounts": accounts if include_tokens else [_sanitize_account(account) for account in accounts]
+    }
+
 @router.post("/accounts")
 async def create_account(account: AccountCreate):
     if not account.instagram_business_id.strip() or not account.page_access_token.strip():
@@ -264,7 +426,8 @@ async def create_account(account: AccountCreate):
         )
     await mongodb.save_page_access_token(
         business_id=account.instagram_business_id.strip(),
-        page_access_token=account.page_access_token.strip()
+        page_access_token=account.page_access_token.strip(),
+        account_status="active"
     )
     return {"status": "success", "message": "Account token saved successfully"}
 
