@@ -8,21 +8,23 @@ logger = logging.getLogger(__name__)
 class InstagramService:
     def __init__(self):
         self.api_version = settings.instagram_api_version
-        self.page_access_token = settings.instagram_page_access_token
         self.base_url = f"https://graph.facebook.com/{self.api_version}"
 
     async def send_raw_message(self, payload: Dict[str, Any], access_token: Optional[str] = None) -> Dict[str, Any]:
         """
         Send a raw messaging payload to the Meta Graph API.
         """
+        if not access_token:
+            logger.warning("Attempted to send message without a page access token.")
+            raise ValueError("access_token is required for sending messages in SaaS multi-tenant mode.")
+            
         url = f"{self.base_url}/me/messages"
-        token = access_token or self.page_access_token
-        params = {"access_token": token}
+        params = {"access_token": access_token}
         
         async with httpx.AsyncClient() as client:
             try:
                 logger.info(f"Sending message payload to {url}: {payload}")
-                if token == "mock_page_access_token":
+                if access_token in ("mock_page_access_token", "mock_saas_page_access_token"):
                     logger.info("Mock Page Access Token detected. Skipping network call.")
                     return {"recipient_id": payload.get("recipient", {}).get("id"), "message_id": "mock_mid_12345"}
                 

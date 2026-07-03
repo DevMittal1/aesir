@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # Meta Instagram Webhook configuration
     instagram_verify_token: str = "mock_verify_token"
     instagram_app_secret: str = "mock_app_secret"
-    instagram_page_access_token: str = "mock_page_access_token"
+    instagram_app_id: str = "mock_app_id"
     instagram_api_version: str = "v20.0"
     
     # Server configuration
@@ -41,5 +41,5 @@ if settings.instagram_verify_token == "mock_verify_token":
     logger.warning("Using default INSTAGRAM_VERIFY_TOKEN. Please update it in production.")
 if settings.instagram_app_secret == "mock_app_secret":
     logger.warning("Using default INSTAGRAM_APP_SECRET. Please update it in production.")
-if settings.instagram_page_access_token == "mock_page_access_token":
-    logger.warning("Using default INSTAGRAM_PAGE_ACCESS_TOKEN. Please update it in production.")
+if settings.instagram_app_id == "mock_app_id":
+    logger.warning("Using default INSTAGRAM_APP_ID. Please update it in production.")
