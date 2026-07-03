@@ -242,5 +242,136 @@ class MongoDB:
         except Exception:
             logger.exception(f"Failed to log activity for user {user_id}")
 
+    async def get_all_page_access_tokens(self) -> list:
+        """
+        Retrieve all page access token documents.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.page_access_tokens.find()
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception("Failed to retrieve all page access tokens.")
+            return []
+
+    async def delete_page_access_token(self, business_id: str) -> bool:
+        """
+        Delete a page access token document by instagram_business_id.
+        """
+        if self.db is None:
+            return False
+        try:
+            result = await self.db.page_access_tokens.delete_one({"instagram_business_id": business_id})
+            return result.deleted_count > 0
+        except Exception:
+            logger.exception(f"Failed to delete page access token for business_id {business_id}.")
+            return False
+
+    async def get_instagram_users(self) -> list:
+        """
+        Retrieve all tracked Instagram Users sorted by last seen activity.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.instagram_users.find().sort("last_seen_at", -1)
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception("Failed to retrieve instagram users.")
+            return []
+
+    async def save_chat_message(self, direction: str, sender_id: str, recipient_id: str, text: Optional[str] = None, msg_type: str = "text", timestamp: Optional[datetime] = None, metadata: Optional[dict] = None) -> None:
+        """
+        Save a chat message (incoming or outgoing) to build a unified chat history.
+        """
+        if self.db is None:
+            return
+        try:
+            dt = timestamp or datetime.now(timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            doc = {
+                "direction": direction,
+                "sender_id": sender_id,
+                "recipient_id": recipient_id,
+                "text": text,
+                "msg_type": msg_type,
+                "timestamp": dt,
+                "metadata": metadata or {}
+            }
+            await self.db.chat_history.insert_one(doc)
+            logger.info(f"Saved {direction} chat message for sender_id={sender_id}")
+        except Exception:
+            logger.exception("Failed to save chat message.")
+
+    async def get_chat_history(self, user_id: str) -> list:
+        """
+        Retrieve chronological message history with a specific user.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.chat_history.find({
+                "$or": [
+                    {"sender_id": user_id},
+                    {"recipient_id": user_id}
+                ]
+            }).sort("timestamp", 1)
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception(f"Failed to retrieve chat history for user {user_id}.")
+            return []
+
+    async def get_recent_payloads(self, limit: int = 50) -> list:
+        """
+        Retrieve recent webhook raw payloads for log monitoring.
+        """
+        if self.db is None:
+            return []
+        try:
+            cursor = self.db.webhook_payloads.find().sort("received_at", -1).limit(limit)
+            res = await cursor.to_list(length=None)
+            for doc in res:
+                if "_id" in doc:
+                    doc["_id"] = str(doc["_id"])
+            return res
+        except Exception:
+            logger.exception("Failed to retrieve recent webhook payloads.")
+            return []
+
+    async def get_dashboard_stats(self) -> dict:
+        """
+        Get dashboard statistics counts.
+        """
+        if self.db is None:
+            return {"total_payloads": 0, "failed_payloads": 0, "total_users": 0, "total_messages": 0}
+        try:
+            total_payloads = await self.db.webhook_payloads.count_documents({})
+            failed_payloads = await self.db.webhook_payloads.count_documents({"status": "failed"})
+            total_users = await self.db.instagram_users.count_documents({})
+            total_messages = await self.db.chat_history.count_documents({})
+            return {
+                "total_payloads": total_payloads,
+                "failed_payloads": failed_payloads,
+                "total_users": total_users,
+                "total_messages": total_messages
+            }
+        except Exception:
+            logger.exception("Failed to get dashboard stats.")
+            return {"total_payloads": 0, "failed_payloads": 0, "total_users": 0, "total_messages": 0}
+
 # Database singleton
 mongodb = MongoDB()

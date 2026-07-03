@@ -169,6 +169,31 @@ class WebhookQueue:
             event.message.model_dump(exclude_none=True)
         )
 
+        # Persist incoming message to database
+        try:
+            text = event.message.text
+            msg_type = "text"
+            if event.message.attachments:
+                msg_type = event.message.attachments[0].type
+                if text is None:
+                    payload_url = event.message.attachments[0].payload.url if event.message.attachments[0].payload else None
+                    text = f"[{msg_type.upper()}] {payload_url or ''}"
+            
+            dt = None
+            if event.timestamp:
+                dt = datetime.fromtimestamp(event.timestamp / 1000, tz=timezone.utc)
+            
+            await mongodb.save_chat_message(
+                direction="incoming",
+                sender_id=sender_id,
+                recipient_id=event.recipient.id,
+                text=text,
+                msg_type=msg_type,
+                timestamp=dt
+            )
+        except Exception:
+            logger.exception("Failed to persist incoming message to database")
+
         await instagram_service.handle_message_event(
             sender_id, event.message.model_dump(exclude_none=True), access_token=access_token
         )
@@ -191,6 +216,25 @@ class WebhookQueue:
             event.timestamp,
             event.postback.model_dump(exclude_none=True)
         )
+
+        # Persist postback as a chat message
+        try:
+            title = event.postback.title
+            payload_str = event.postback.payload
+            text = f"[CLICK] {title} (payload: {payload_str})"
+            dt = None
+            if event.timestamp:
+                dt = datetime.fromtimestamp(event.timestamp / 1000, tz=timezone.utc)
+            await mongodb.save_chat_message(
+                direction="incoming",
+                sender_id=sender_id,
+                recipient_id=event.recipient.id,
+                text=text,
+                msg_type="postback",
+                timestamp=dt
+            )
+        except Exception:
+            logger.exception("Failed to persist incoming postback to database")
 
         await instagram_service.handle_postback_event(
             sender_id, event.postback.model_dump(exclude_none=True), access_token=access_token
@@ -235,6 +279,25 @@ class WebhookQueue:
             event.timestamp,
             event.reaction.model_dump(exclude_none=True)
         )
+
+        # Persist reaction as a chat message
+        try:
+            action = event.reaction.action
+            emoji = event.reaction.emoji
+            text = f"[REACTION] {action} with {emoji}"
+            dt = None
+            if event.timestamp:
+                dt = datetime.fromtimestamp(event.timestamp / 1000, tz=timezone.utc)
+            await mongodb.save_chat_message(
+                direction="incoming",
+                sender_id=sender_id,
+                recipient_id=event.recipient.id,
+                text=text,
+                msg_type="reaction",
+                timestamp=dt
+            )
+        except Exception:
+            logger.exception("Failed to persist incoming reaction to database")
             
         await instagram_service.handle_reaction_event(
             sender_id, event.reaction.model_dump(exclude_none=True), access_token=access_token

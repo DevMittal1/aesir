@@ -24,14 +24,40 @@ class InstagramService:
         async with httpx.AsyncClient() as client:
             try:
                 logger.info(f"Sending message payload to {url}: {payload}")
+                res_data = None
                 if access_token in ("mock_page_access_token", "mock_saas_page_access_token"):
                     logger.info("Mock Page Access Token detected. Skipping network call.")
-                    return {"recipient_id": payload.get("recipient", {}).get("id"), "message_id": "mock_mid_12345"}
+                    res_data = {"recipient_id": payload.get("recipient", {}).get("id"), "message_id": "mock_mid_12345"}
+                else:
+                    response = await client.post(url, json=payload, params=params, timeout=10.0)
+                    response.raise_for_status()
+                    res_data = response.json()
+                    logger.info(f"Meta Graph API response: {res_data}")
                 
-                response = await client.post(url, json=payload, params=params, timeout=10.0)
-                response.raise_for_status()
-                res_data = response.json()
-                logger.info(f"Meta Graph API response: {res_data}")
+                # Persist successful outgoing message to database
+                try:
+                    from app.database.mongodb import mongodb
+                    recipient_id = payload.get("recipient", {}).get("id")
+                    message_data = payload.get("message", {})
+                    text = message_data.get("text")
+                    msg_type = "text"
+                    if "attachment" in message_data:
+                        msg_type = message_data["attachment"].get("type", "attachment")
+                        if text is None:
+                            payload_url = message_data["attachment"].get("payload", {}).get("url")
+                            text = f"[{msg_type.upper()}] {payload_url or ''}"
+                    
+                    if recipient_id:
+                        await mongodb.save_chat_message(
+                            direction="outgoing",
+                            sender_id="page",
+                            recipient_id=recipient_id,
+                            text=text,
+                            msg_type=msg_type
+                        )
+                except Exception:
+                    logger.exception("Failed to persist outgoing message to database")
+
                 return res_data
             except httpx.HTTPStatusError as exc:
                 logger.exception("HTTP error occurred while calling Meta")

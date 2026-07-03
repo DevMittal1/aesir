@@ -1,7 +1,11 @@
 import logging
 import uvicorn
+from anyio import Path
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from app.api.webhook import router as webhook_router
+from app.api.admin import router as admin_router
 from app.config import settings
 
 # Configure logging
@@ -42,9 +46,21 @@ init_telemetry(app)
 
 # Register routes
 app.include_router(webhook_router)
+app.include_router(admin_router)
 
-@app.get("/")
+# Mount static files
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
 async def root():
+    index_file = Path("app") / "static" / "index.html"
+    if await index_file.exists():
+        content = await index_file.read_text(encoding="utf-8")
+        return HTMLResponse(content=content)
+    return HTMLResponse(content="<h1>Dashboard is setting up... Please check back in a moment.</h1>")
+
+@app.get("/api/health")
+async def health():
     return {
         "status": "healthy",
         "service": "instagram-webhook-backend",

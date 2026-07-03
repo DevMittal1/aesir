@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MentorAI Webhook Management Portal</title>
+    <!-- Outfit Google Font for clean modern typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Dashboard custom styling stylesheet -->
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-wand-magic-sparkles logo-icon"></i>
+                    <span>MentorAI</span>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-tab="dashboard">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>Dashboard</span>
+                </button>
+                <button class="nav-item" data-tab="accounts">
+                    <i class="fa-solid fa-key"></i>
+                    <span>Page Accounts</span>
+                </button>
+                <button class="nav-item" data-tab="inbox">
+                    <i class="fa-solid fa-comments"></i>
+                    <span>Inbox Chat</span>
+                </button>
+                <button class="nav-item" data-tab="logs">
+                    <i class="fa-solid fa-receipt"></i>
+                    <span>Live Webhook Logs</span>
+                </button>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="pulse green"></span>
+                    <span class="status-text">Server Status: Online</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Dashboard Viewport -->
+        <main class="main-content">
+            <header class="main-header">
+                <div class="header-title">
+                    <h1 id="tab-title">Dashboard Overview</h1>
+                    <p id="tab-subtitle">Real-time metrics and configurations for your Instagram automation.</p>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-secondary" id="btn-refresh">
+                        <i class="fa-solid fa-rotate"></i> Refresh
+                    </button>
+                </div>
+            </header>
+
+            <div class="tab-viewport">
+                <!-- Tab 1: Dashboard Stats -->
+                <section class="tab-pane active" id="dashboard-tab">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon purple">
+                                <i class="fa-solid fa-cube"></i>
+                            </div>
+                            <div class="stat-details">
+                                <span class="stat-label">Total Webhook Traces</span>
+                                <h3 class="stat-val" id="stats-total-payloads">0</h3>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon red">
+                                <i class="fa-solid fa-triangle-exclamation"></i>
+                            </div>
+                            <div class="stat-details">
+                                <span class="stat-label">Failed Payloads</span>
+                                <h3 class="stat-val" id="stats-failed-payloads">0</h3>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon blue">
+                                <i class="fa-solid fa-users"></i>
+                            </div>
+                            <div class="stat-details">
+                                <span class="stat-label">Tracked Users</span>
+                                <h3 class="stat-val" id="stats-total-users">0</h3>
+                            </div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon green">
+                                <i class="fa-solid fa-envelope"></i>
+                            </div>
+                            <div class="stat-details">
+                                <span class="stat-label">Processed Messages</span>
+                                <h3 class="stat-val" id="stats-total-messages">0</h3>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-details-grid">
+                        <div class="details-card glass-panel">
+                            <h3><i class="fa-solid fa-circle-info"></i> System Information</h3>
+                            <div class="system-info-list">
+                                <div class="info-item">
+                                    <span class="label">API Version:</span>
+                                    <span class="val font-mono" id="sys-api-ver">v20.0</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">FastAPI Status:</span>
+                                    <span class="val success"><i class="fa-solid fa-circle-check"></i> Healthy</span>
+                                </div>
+                                <div class="info-item font-mono">
+                                    <span class="label">MongoDB URI:</span>
+                                    <span class="val truncate">Connected (Atlas Cluster)</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="label">Jaeger Tracing:</span>
+                                    <a href="http://localhost:16686" target="_blank" class="val link">
+                                        Open Web UI <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="details-card glass-panel">
+                            <h3><i class="fa-solid fa-bolt"></i> Quick Verification Info</h3>
+                            <p class="description">Use these parameters inside the Meta Developer Webhooks console to link your application:</p>
+                            <div class="verify-details-box">
+                                <div class="detail-row">
+                                    <span class="label">Verify Token:</span>
+                                    <div class="code-copy-container">
+                                        <code id="verify-token-val">Loading...</code>
+                                        <button class="btn-copy" onclick="copyText('verify-token-val')"><i class="fa-solid fa-copy"></i></button>
+                                    </div>
+                                </div>
+                                <div class="detail-row">
+                                    <span class="label">Callback Endpoint:</span>
+                                    <div class="code-copy-container">
+                                        <code id="callback-url-val">Loading...</code>
+                                        <button class="btn-copy" onclick="copyText('callback-url-val')"><i class="fa-solid fa-copy"></i></button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 2: Accounts Manager -->
+                <section class="tab-pane" id="accounts-tab">
+                    <div class="accounts-grid">
+                        <div class="accounts-form-container glass-panel">
+                            <h3><i class="fa-solid fa-circle-plus"></i> Add Instagram Account</h3>
+                            <p class="section-desc">Register a new Instagram Business Account ID and its Facebook Page Access Token to listen for incoming messages.</p>
+                            <form id="form-add-account">
+                                <div class="form-group">
+                                    <label for="input-business-id">Instagram Business Account ID</label>
+                                    <input type="text" id="input-business-id" required placeholder="e.g. 17841400000000000">
+                                    <small>This is your Instagram account ID, retrieved from the Meta Graph API or Business Manager.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="input-access-token">Page Access Token</label>
+                                    <input type="password" id="input-access-token" required placeholder="EAABw...">
+                                    <small>Page access token generated from your Meta App under Messenger Settings.</small>
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-full">
+                                    <i class="fa-solid fa-circle-check"></i> Register Account
+                                </button>
+                            </form>
+                        </div>
+
+                        <div class="accounts-list-container glass-panel">
+                            <h3><i class="fa-solid fa-table-list"></i> Linked Accounts</h3>
+                            <div class="table-wrapper">
+                                <table class="custom-table" id="table-accounts">
+                                    <thead>
+                                        <tr>
+                                            <th>Instagram Business ID</th>
+                                            <th>Page Access Token</th>
+                                            <th>Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="accounts-tbody">
+                                        <tr>
+                                            <td colspan="3" class="text-center text-muted">Loading accounts...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 3: Inbox Chat -->
+                <section class="tab-pane" id="inbox-tab">
+                    <div class="inbox-container glass-panel">
+                        <!-- Left pane: Users List -->
+                        <div class="inbox-sidebar">
+                            <div class="inbox-search">
+                                <i class="fa-solid fa-magnifying-glass"></i>
+                                <input type="text" id="inbox-search-input" placeholder="Search chats...">
+                            </div>
+                            <div class="inbox-users-list" id="inbox-users-tbody">
+                                <!-- Users list gets populated here -->
+                                <div class="text-center text-muted p-4">Loading tracked users...</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Right pane: Chat Area -->
+                        <div class="chat-area" id="chat-area-container">
+                            <div class="chat-empty-state" id="chat-empty-view">
+                                <i class="fa-solid fa-comments"></i>
+                                <h3>No Conversation Selected</h3>
+                                <p>Select a user from the sidebar to view their message history and see replies sent by your webhook bot.</p>
+                            </div>
+                            
+                            <div class="chat-active-state hide" id="chat-active-view">
+                                <div class="chat-header">
+                                    <div class="chat-user-avatar" id="chat-header-avatar">U</div>
+                                    <div class="chat-user-info">
+                                        <h4 id="chat-header-name">Loading...</h4>
+                                        <p id="chat-header-status">User ID: <span id="chat-header-userid">...</span></p>
+                                    </div>
+                                </div>
+                                <div class="chat-messages-container" id="chat-messages-box">
+                                    <!-- Messages populate dynamically -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Tab 4: Webhook Payload Logs -->
+                <section class="tab-pane" id="logs-tab">
+                    <div class="logs-container glass-panel">
+                        <div class="table-wrapper">
+                            <table class="custom-table" id="table-logs">
+                                <thead>
+                                    <tr>
+                                        <th>Received At</th>
+                                        <th>Client IP</th>
+                                        <th>Status</th>
+                                        <th>Details</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="logs-tbody">
+                                    <tr>
+                                        <td colspan="4" class="text-center text-muted">Loading webhook events...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal for viewing Raw JSON Log -->
+    <div class="modal" id="modal-log-viewer">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-code"></i> Raw Webhook Payload</h3>
+                <button class="btn-close" id="btn-close-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <pre><code id="modal-json-block">Loading...</code></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom JavaScript logic -->
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

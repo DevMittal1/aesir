@@ -46,6 +46,10 @@ def setup_test_context():
 def test_root_endpoint():
     response = client.get("/")
     assert response.status_code == 200
+    assert "<!DOCTYPE html>" in response.text
+
+    response = client.get("/api/health")
+    assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
     assert data["service"] == "instagram-webhook-backend"
