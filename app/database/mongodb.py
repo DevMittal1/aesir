@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Union
 from pymongo import AsyncMongoClient
 from app.config import settings
 
@@ -165,6 +165,82 @@ class MongoDB:
             logger.info(f"Successfully saved/updated page access token for business_id {business_id}")
         except Exception:
             logger.exception(f"Failed to save page access token for business_id {business_id}")
+
+    async def get_instagram_user(self, user_id: str) -> Optional[dict]:
+        """
+        Retrieve an Instagram User profile document from the database.
+        """
+        if self.db is None:
+            return None
+        try:
+            return await self.db.instagram_users.find_one({"instagram_user_id": user_id})
+        except Exception:
+            logger.exception(f"Failed to retrieve user {user_id}")
+            return None
+
+    async def upsert_instagram_user(self, business_id: str, user_id: str, profile_data: Optional[dict] = None) -> None:
+        """
+        Upsert an Instagram User profile in the database, updating last_seen_at.
+        """
+        if self.db is None:
+            return
+        try:
+            now = datetime.now(timezone.utc)
+            update_fields = {
+                "last_seen_at": now,
+                "instagram_business_id": business_id
+            }
+            if profile_data:
+                if "name" in profile_data:
+                    update_fields["name"] = profile_data["name"]
+                if "profile_pic" in profile_data:
+                    update_fields["profile_pic"] = profile_data["profile_pic"]
+
+            await self.db.instagram_users.update_one(
+                {"instagram_user_id": user_id},
+                {
+                    "$set": update_fields,
+                    "$setOnInsert": {
+                        "first_seen_at": now
+                    }
+                },
+                upsert=True
+            )
+            logger.info(f"Successfully upserted user {user_id}")
+        except Exception:
+            logger.exception(f"Failed to upsert user {user_id}")
+
+    async def log_user_activity(self, business_id: str, user_id: str, activity_type: str, timestamp: Union[int, datetime], details: dict) -> None:
+        """
+        Log an Instagram User activity/event in the database.
+        """
+        if self.db is None:
+            return
+        try:
+            if isinstance(timestamp, (int, float)):
+                if timestamp > 1e11:  # Milliseconds
+                    dt = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+                else:  # Seconds
+                    dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            elif isinstance(timestamp, datetime):
+                dt = timestamp
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = datetime.now(timezone.utc)
+
+            activity_doc = {
+                "instagram_user_id": user_id,
+                "instagram_business_id": business_id,
+                "activity_type": activity_type,
+                "timestamp": dt,
+                "details": details,
+                "logged_at": datetime.now(timezone.utc)
+            }
+            await self.db.user_activities.insert_one(activity_doc)
+            logger.info(f"Logged activity '{activity_type}' for user {user_id}")
+        except Exception:
+            logger.exception(f"Failed to log activity for user {user_id}")
 
 # Database singleton
 mongodb = MongoDB()

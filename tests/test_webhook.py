@@ -380,3 +380,134 @@ async def test_webhook_queue_processing_all_new_events():
             {"ref": "optin_ref_456"},
             access_token="mock_saas_page_access_token"
         )
+
+
+@pytest.mark.asyncio
+async def test_webhook_queue_user_tracking():
+    from app.services.webhook_queue import WebhookQueue
+    from app.services.instagram import instagram_service
+    
+    queue = WebhookQueue()
+    
+    # Test 1: New user (should fetch profile and upsert)
+    mock_get_user = AsyncMock(return_value=None)
+    mock_upsert_user = AsyncMock()
+    mock_get_profile = AsyncMock(return_value={"name": "Alice", "profile_pic": "alice.jpg"})
+    
+    # Minimal message payload
+    payload = {
+        "object": "instagram",
+        "entry": [
+            {
+                "id": "biz_1",
+                "time": 12345,
+                "messaging": [
+                    {
+                        "sender": {"id": "user_alice"},
+                        "recipient": {"id": "receiver_1"},
+                        "timestamp": 12345,
+                        "message": {
+                            "mid": "mid_alice_1",
+                            "text": "hello"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    
+    with patch.object(mongodb, "get_instagram_user", mock_get_user), \
+         patch.object(mongodb, "upsert_instagram_user", mock_upsert_user), \
+         patch.object(mongodb, "is_event_processed", AsyncMock(return_value=False)), \
+         patch.object(mongodb, "mark_event_processed", AsyncMock()), \
+         patch.object(mongodb, "update_payload_status", AsyncMock()), \
+         patch.object(mongodb, "get_page_access_token", AsyncMock(return_value="mock_token")), \
+         patch.object(instagram_service, "get_user_profile", mock_get_profile), \
+         patch.object(instagram_service, "handle_message_event", AsyncMock()):
+         
+        await queue._process_payload("payload_id_1", payload)
+        
+        # Verify first-time user fetches profile and upserts
+        mock_get_user.assert_called_once_with("user_alice")
+        mock_get_profile.assert_called_once_with("user_alice", "mock_token")
+        mock_upsert_user.assert_called_once_with("biz_1", "user_alice", {"name": "Alice", "profile_pic": "alice.jpg"})
+        
+    # Test 2: Existing cached user (should NOT fetch profile, only upsert)
+    from datetime import datetime, timezone
+    mock_get_user_cached = AsyncMock(return_value={
+        "instagram_user_id": "user_alice",
+        "last_seen_at": datetime.now(timezone.utc)
+    })
+    mock_upsert_user_cached = AsyncMock()
+    mock_get_profile_cached = AsyncMock()
+    
+    with patch.object(mongodb, "get_instagram_user", mock_get_user_cached), \
+         patch.object(mongodb, "upsert_instagram_user", mock_upsert_user_cached), \
+         patch.object(mongodb, "is_event_processed", AsyncMock(return_value=False)), \
+         patch.object(mongodb, "mark_event_processed", AsyncMock()), \
+         patch.object(mongodb, "update_payload_status", AsyncMock()), \
+         patch.object(mongodb, "get_page_access_token", AsyncMock(return_value="mock_token")), \
+         patch.object(instagram_service, "get_user_profile", mock_get_profile_cached), \
+         patch.object(instagram_service, "handle_message_event", AsyncMock()):
+         
+        await queue._process_payload("payload_id_2", payload)
+        
+        # Verify cached user does NOT call get_user_profile, but still calls upsert to update last_seen_at
+        mock_get_user_cached.assert_called_once_with("user_alice")
+        mock_get_profile_cached.assert_not_called()
+        mock_upsert_user_cached.assert_called_once_with("biz_1", "user_alice", None)
+
+
+@pytest.mark.asyncio
+async def test_webhook_queue_activity_logging():
+    from app.services.webhook_queue import WebhookQueue
+    from app.services.instagram import instagram_service
+    
+    queue = WebhookQueue()
+    
+    # Mock log_user_activity and other DB / service calls
+    mock_log_activity = AsyncMock()
+    
+    payload = {
+        "object": "instagram",
+        "entry": [
+            {
+                "id": "biz_1",
+                "time": 12345,
+                "messaging": [
+                    {
+                        "sender": {"id": "user_123"},
+                        "recipient": {"id": "biz_1"},
+                        "timestamp": 1600000000,
+                        "message": {
+                            "mid": "mid_activity_1",
+                            "text": "hello chatbot"
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    
+    with patch.object(mongodb, "log_user_activity", mock_log_activity), \
+         patch.object(mongodb, "is_event_processed", AsyncMock(return_value=False)), \
+         patch.object(mongodb, "mark_event_processed", AsyncMock()), \
+         patch.object(mongodb, "update_payload_status", AsyncMock()), \
+         patch.object(mongodb, "get_page_access_token", AsyncMock(return_value="mock_token")), \
+         patch.object(mongodb, "get_instagram_user", AsyncMock(return_value=None)), \
+         patch.object(mongodb, "upsert_instagram_user", AsyncMock()), \
+         patch.object(instagram_service, "get_user_profile", AsyncMock()), \
+         patch.object(instagram_service, "handle_message_event", AsyncMock()):
+         
+        await queue._process_payload("payload_activity_1", payload)
+        
+        # Verify log_user_activity is called correctly
+        mock_log_activity.assert_called_once_with(
+            "biz_1",
+            "user_123",
+            "message",
+            1600000000,
+            {"mid": "mid_activity_1", "text": "hello chatbot", "is_echo": False}
+        )
+
+

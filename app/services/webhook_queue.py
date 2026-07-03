@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import hashlib
+from datetime import datetime, timezone
 from typing import Optional
 from app.database.mongodb import mongodb
 from app.models.webhook import InstagramWebhookPayload, MessagingEvent, WebhookChange
@@ -107,101 +108,183 @@ class WebhookQueue:
     async def _process_messaging_event(self, business_id: str, event: MessagingEvent) -> None:
         sender_id = event.sender.id
         
-        # Retrieve the Page Access Token dynamically for this client page (SaaS architecture)
         access_token = await mongodb.get_page_access_token(business_id)
         if not access_token:
             logger.info(f"No custom Page Access Token found for business_id {business_id}. Falling back to default/mock token.")
         
+        await self._track_user(business_id, sender_id, access_token)
+
         if event.message:
-            mid = event.message.mid
-            if not mid:
-                logger.warning(f"Received message event without mid from sender: {sender_id}")
-                return
-
-            # Idempotency check
-            if await mongodb.is_event_processed(mid):
-                logger.info(f"Duplicate message event ignored. mid={mid}")
-                return
-
-            await instagram_service.handle_message_event(
-                sender_id, event.message.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(mid)
-
+            await self._handle_message_event(sender_id, event, access_token)
         elif event.postback:
-            # Generate a unique key for postback based on sender, recipient, timestamp, and payload
-            raw_key = f"postback_{sender_id}_{event.recipient.id}_{event.timestamp}_{event.postback.payload}"
-            postback_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-
-            # Idempotency check
-            if await mongodb.is_event_processed(postback_id):
-                logger.info(f"Duplicate postback event ignored. postback_id={postback_id}")
-                return
-
-            await instagram_service.handle_postback_event(
-                sender_id, event.postback.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(postback_id)
-
+            await self._handle_postback_event(sender_id, event, access_token)
         elif event.read:
-            # Generate a unique key for read events
-            watermark = event.read.watermark or event.timestamp
-            read_id = f"read_{sender_id}_{event.recipient.id}_{watermark}"
-            
-            if await mongodb.is_event_processed(read_id):
-                logger.info(f"Duplicate read event ignored. read_id={read_id}")
-                return
-                
-            await instagram_service.handle_read_event(
-                sender_id, event.read.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(read_id)
-
+            await self._handle_read_event(sender_id, event, access_token)
         elif event.reaction:
-            # Generate a unique key for reaction events
-            raw_key = f"reaction_{sender_id}_{event.recipient.id}_{event.reaction.mid}_{event.reaction.action}"
-            reaction_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-            
-            if await mongodb.is_event_processed(reaction_id):
-                logger.info(f"Duplicate reaction event ignored. reaction_id={reaction_id}")
-                return
-                
-            await instagram_service.handle_reaction_event(
-                sender_id, event.reaction.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(reaction_id)
-
+            await self._handle_reaction_event(sender_id, event, access_token)
         elif event.referral:
-            # Generate a unique key for referral events
-            raw_key = f"referral_{sender_id}_{event.recipient.id}_{event.timestamp}_{event.referral.ref}"
-            referral_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-            
-            if await mongodb.is_event_processed(referral_id):
-                logger.info(f"Duplicate referral event ignored. referral_id={referral_id}")
-                return
-                
-            await instagram_service.handle_referral_event(
-                sender_id, event.referral.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(referral_id)
-
+            await self._handle_referral_event(sender_id, event, access_token)
         elif event.optin:
-            # Generate a unique key for optin events
-            optin_ref = event.optin.ref or "default_ref"
-            raw_key = f"optin_{sender_id}_{event.recipient.id}_{event.timestamp}_{optin_ref}"
-            optin_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
-            
-            if await mongodb.is_event_processed(optin_id):
-                logger.info(f"Duplicate optin event ignored. optin_id={optin_id}")
-                return
-                
-            await instagram_service.handle_optin_event(
-                sender_id, event.optin.model_dump(exclude_none=True), access_token=access_token
-            )
-            await mongodb.mark_event_processed(optin_id)
-
+            await self._handle_optin_event(sender_id, event, access_token)
         else:
             logger.info(f"Received unhandled messaging event type from {sender_id}: {event}")
+
+    async def _track_user(self, business_id: str, sender_id: str, access_token: Optional[str]) -> None:
+        try:
+            should_fetch = await self._should_fetch_profile(sender_id)
+            profile_data = None
+            if should_fetch:
+                profile_data = await instagram_service.get_user_profile(sender_id, access_token)
+            await mongodb.upsert_instagram_user(business_id, sender_id, profile_data)
+        except Exception:
+            logger.exception(f"Failed to track user profile for sender {sender_id}")
+
+    async def _should_fetch_profile(self, sender_id: str) -> bool:
+        user = await mongodb.get_instagram_user(sender_id)
+        if not user:
+            return True
+        last_updated = user.get("updated_at") or user.get("last_seen_at")
+        if not last_updated:
+            return True
+        if last_updated.tzinfo is None:
+            last_updated = last_updated.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last_updated).total_seconds() >= 86400
+
+    async def _handle_message_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        mid = event.message.mid
+        if not mid:
+            logger.warning(f"Received message event without mid from sender: {sender_id}")
+            return
+
+        # Idempotency check
+        if await mongodb.is_event_processed(mid):
+            logger.info(f"Duplicate message event ignored. mid={mid}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "message",
+            event.timestamp,
+            event.message.model_dump(exclude_none=True)
+        )
+
+        await instagram_service.handle_message_event(
+            sender_id, event.message.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(mid)
+
+    async def _handle_postback_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        # Generate a unique key for postback based on sender, recipient, timestamp, and payload
+        raw_key = f"postback_{sender_id}_{event.recipient.id}_{event.timestamp}_{event.postback.payload}"
+        postback_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+        # Idempotency check
+        if await mongodb.is_event_processed(postback_id):
+            logger.info(f"Duplicate postback event ignored. postback_id={postback_id}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "postback",
+            event.timestamp,
+            event.postback.model_dump(exclude_none=True)
+        )
+
+        await instagram_service.handle_postback_event(
+            sender_id, event.postback.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(postback_id)
+
+    async def _handle_read_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        # Generate a unique key for read events
+        watermark = event.read.watermark or event.timestamp
+        read_id = f"read_{sender_id}_{event.recipient.id}_{watermark}"
+        
+        if await mongodb.is_event_processed(read_id):
+            logger.info(f"Duplicate read event ignored. read_id={read_id}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "read",
+            event.timestamp,
+            event.read.model_dump(exclude_none=True)
+        )
+            
+        await instagram_service.handle_read_event(
+            sender_id, event.read.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(read_id)
+
+    async def _handle_reaction_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        # Generate a unique key for reaction events
+        raw_key = f"reaction_{sender_id}_{event.recipient.id}_{event.reaction.mid}_{event.reaction.action}"
+        reaction_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        
+        if await mongodb.is_event_processed(reaction_id):
+            logger.info(f"Duplicate reaction event ignored. reaction_id={reaction_id}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "reaction",
+            event.timestamp,
+            event.reaction.model_dump(exclude_none=True)
+        )
+            
+        await instagram_service.handle_reaction_event(
+            sender_id, event.reaction.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(reaction_id)
+
+    async def _handle_referral_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        # Generate a unique key for referral events
+        raw_key = f"referral_{sender_id}_{event.recipient.id}_{event.timestamp}_{event.referral.ref}"
+        referral_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        
+        if await mongodb.is_event_processed(referral_id):
+            logger.info(f"Duplicate referral event ignored. referral_id={referral_id}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "referral",
+            event.timestamp,
+            event.referral.model_dump(exclude_none=True)
+        )
+            
+        await instagram_service.handle_referral_event(
+            sender_id, event.referral.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(referral_id)
+
+    async def _handle_optin_event(self, sender_id: str, event: MessagingEvent, access_token: Optional[str]) -> None:
+        # Generate a unique key for optin events
+        optin_ref = event.optin.ref or "default_ref"
+        raw_key = f"optin_{sender_id}_{event.recipient.id}_{event.timestamp}_{optin_ref}"
+        optin_id = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+        
+        if await mongodb.is_event_processed(optin_id):
+            logger.info(f"Duplicate optin event ignored. optin_id={optin_id}")
+            return
+
+        await mongodb.log_user_activity(
+            event.recipient.id,
+            sender_id,
+            "optin",
+            event.timestamp,
+            event.optin.model_dump(exclude_none=True)
+        )
+            
+        await instagram_service.handle_optin_event(
+            sender_id, event.optin.model_dump(exclude_none=True), access_token=access_token
+        )
+        await mongodb.mark_event_processed(optin_id)
 
     async def _process_change_event(self, change: WebhookChange) -> None:
         # Determine unique event ID for the change

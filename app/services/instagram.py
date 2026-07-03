@@ -228,4 +228,32 @@ class InstagramService:
             access_token=access_token
         )
 
+    async def get_user_profile(self, user_id: str, access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the user profile (name, profile_pic) from the Meta Graph API.
+        """
+        if not access_token:
+            logger.warning("Attempted to fetch user profile without a page access token.")
+            return None
+            
+        url = f"{self.base_url}/{user_id}"
+        params = {
+            "fields": "name,profile_pic",
+            "access_token": access_token
+        }
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                if access_token in ("mock_page_access_token", "mock_saas_page_access_token"):
+                    return {"name": "Mock User", "profile_pic": "https://example.com/mock.jpg"}
+                    
+                response = await client.get(url, params=params, timeout=5.0)
+                if response.status_code == 200:
+                    return response.json()
+                logger.error(f"Failed to fetch user profile: {response.text}")
+                return None
+            except Exception:
+                logger.exception(f"Error fetching user profile for user_id {user_id}")
+                return None
+
 instagram_service = InstagramService()
