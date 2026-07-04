@@ -66,16 +66,16 @@ def test_root_endpoint():
 def test_oauth_url_generator():
     # 1. Test when app_id is mock_app_id (should fail with 400)
     settings.instagram_app_id = "mock_app_id"
-    response = client.get("/api/admin/oauth-url", params={"redirect_uri": "http://localhost:3000/dashboard"})
+    response = client.get("/api/admin/oauth-url")
     assert response.status_code == 400
     assert "Meta App ID is not configured" in response.json()["detail"]
 
     # 2. Test when app_id is valid (Instagram default)
     settings.instagram_app_id = "1234567890"
+    settings.backend_public_url = "https://backend.example.com"
     response = client.get(
         "/api/admin/oauth-url",
         params={
-            "redirect_uri": "http://localhost:3000/dashboard",
             "state": "random_csrf_token",
             "platform": "instagram"
         }
@@ -85,14 +85,13 @@ def test_oauth_url_generator():
     assert "url" in data
     assert data["url"].startswith("https://api.instagram.com/oauth/authorize")
     assert "client_id=1234567890" in data["url"]
-    assert "redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fdashboard" in data["url"]
+    assert "redirect_uri=https%3A%2F%2Fbackend.example.com%2Fapi%2Fadmin%2Foauth%2Fcallback" in data["url"]
     assert "state=random_csrf_token" in data["url"]
 
     # 3. Test when platform is facebook
     response = client.get(
         "/api/admin/oauth-url",
         params={
-            "redirect_uri": "http://localhost:3000/dashboard",
             "state": "random_csrf_token",
             "platform": "facebook"
         }
@@ -102,7 +101,7 @@ def test_oauth_url_generator():
     assert "url" in data
     assert data["url"].startswith(f"https://www.facebook.com/{settings.instagram_api_version}/dialog/oauth")
     assert "client_id=1234567890" in data["url"]
-    assert "redirect_uri=http%3A%2F%2Flocalhost%3A3000%2Fdashboard" in data["url"]
+    assert "redirect_uri=https%3A%2F%2Fbackend.example.com%2Fapi%2Fadmin%2Foauth%2Fcallback" in data["url"]
     assert "state=random_csrf_token" in data["url"]
 
     # 4. Test default backend callback redirect_uri for production flow
@@ -221,7 +220,8 @@ async def test_connect_meta_accounts_saves_connected_account_metadata():
             "meta_user_id": "meta_user_123",
             "instagram_business_id": "ig_123",
             "instagram_username": "test_ig",
-            "subscription_status": "subscribed"
+            "subscription_status": "subscribed",
+            "account_status": "active"
         }
     ]
     mock_save_profile.assert_awaited_once_with(
@@ -229,7 +229,8 @@ async def test_connect_meta_accounts_saves_connected_account_metadata():
         name="Meta User",
         email="meta@example.com",
         user_access_token="user_token_123",
-        token_expires_in=5184000
+        token_expires_in=5184000,
+        auth_status="active"
     )
     mock_save_token.assert_awaited_once_with(
         business_id="ig_123",
@@ -244,8 +245,120 @@ async def test_connect_meta_accounts_saves_connected_account_metadata():
             "messaging_seen",
             "messaging_reactions"
         ],
-        subscription_status="subscribed"
+        subscription_status="subscribed",
+        account_status="active"
     )
+
+
+def test_login_user_api_returns_oauth_url():
+    settings.instagram_app_id = "1234567890"
+    settings.backend_public_url = "https://backend.example.com"
+
+    response = client.get("/api/admin/auth/login", params={"platform": "facebook", "state": "csrf_123"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["url"].startswith(f"https://www.facebook.com/{settings.instagram_api_version}/dialog/oauth")
+    assert "client_id=1234567890" in data["url"]
+    assert "state=csrf_123" in data["url"]
+
+
+def test_connected_account_management_apis_mask_tokens_and_update():
+    account_doc = {
+        "_id": "doc_1",
+        "instagram_business_id": "ig_123",
+        "page_access_token": "PAGE_ACCESS_TOKEN_123456",
+        "page_id": "page_123",
+        "page_name": "Test Page",
+        "account_status": "active"
+    }
+
+    with patch.object(mongodb, "get_all_page_access_tokens", AsyncMock(return_value=[account_doc])):
+        response = client.get("/api/admin/connected-accounts")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data[0]["page_access_token_preview"] == "PAGE_A...3456"
+    assert "page_access_token" not in data[0]
+
+    with patch.object(mongodb, "update_connected_account", AsyncMock(return_value=True)) as mock_update:
+        response = client.patch(
+            "/api/admin/connected-accounts/ig_123",
+            json={"account_status": "inactive", "notes": "paused by admin"}
+        )
+
+    assert response.status_code == 200
+    mock_update.assert_awaited_once_with(
+        "ig_123",
+        {"account_status": "inactive", "notes": "paused by admin"}
+    )
+
+
+def test_meta_user_detail_api_masks_tokens_and_includes_accounts():
+    user_doc = {
+        "_id": "user_doc_1",
+        "meta_user_id": "meta_user_123",
+        "name": "Meta User",
+        "user_access_token": "USER_ACCESS_TOKEN_123456"
+    }
+    account_doc = {
+        "_id": "account_doc_1",
+        "instagram_business_id": "ig_123",
+        "page_access_token": "PAGE_ACCESS_TOKEN_123456"
+    }
+
+    with patch.object(mongodb, "get_meta_user_profile", AsyncMock(return_value=user_doc)), \
+         patch.object(mongodb, "get_accounts_by_meta_user", AsyncMock(return_value=[account_doc])):
+        response = client.get("/api/admin/meta-users/meta_user_123")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user"]["user_access_token_preview"] == "USER_A...3456"
+    assert "user_access_token" not in data["user"]
+    assert data["connected_accounts"][0]["page_access_token_preview"] == "PAGE_A...3456"
+    assert "page_access_token" not in data["connected_accounts"][0]
+
+
+def test_deauthorize_connected_account_calls_meta_and_marks_inactive():
+    settings.instagram_api_version = "v20.0"
+    settings.graph_api_base_url = "https://graph.facebook.com"
+    account_doc = {
+        "instagram_business_id": "ig_123",
+        "page_id": "page_123",
+        "page_access_token": "page_token_123",
+        "meta_user_id": "meta_user_123"
+    }
+
+    delete_response = MagicMock()
+    delete_response.raise_for_status = MagicMock()
+    mock_client = AsyncMock()
+    mock_client.delete = AsyncMock(return_value=delete_response)
+    mock_client_context = MagicMock()
+    mock_client_context.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_context.__aexit__ = AsyncMock(return_value=None)
+
+    with patch.object(mongodb, "get_connected_account", AsyncMock(return_value=account_doc)), \
+         patch.object(mongodb, "update_connected_account", AsyncMock(return_value=True)) as mock_update_account, \
+         patch.object(mongodb, "get_accounts_by_meta_user", AsyncMock(return_value=[account_doc])), \
+         patch.object(mongodb, "update_meta_user_status", AsyncMock(return_value=True)) as mock_update_user, \
+         patch("app.api.admin.httpx.AsyncClient", return_value=mock_client_context):
+        response = client.post("/api/admin/connected-accounts/ig_123/deauthorize")
+
+    assert response.status_code == 200
+    mock_client.delete.assert_awaited_once()
+    mock_update_account.assert_awaited_once_with(
+        "ig_123",
+        {"subscription_status": "deauthorized", "account_status": "inactive"}
+    )
+    mock_update_user.assert_awaited_once_with("meta_user_123", "deauthorized")
+
+
+def test_delete_connected_account_api():
+    with patch.object(mongodb, "delete_page_access_token", AsyncMock(return_value=True)) as mock_delete:
+        response = client.delete("/api/admin/connected-accounts/ig_123")
+
+    assert response.status_code == 200
+    mock_delete.assert_awaited_once_with("ig_123")
 
 
 def test_webhook_verification_success():
